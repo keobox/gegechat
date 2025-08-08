@@ -1,12 +1,8 @@
 /*
  *                                                                  *
- * Name: chatser_ipv4.c                                             *
- *                                                                  *
- * Version: 1.5.1                                                   *
+ * Name: server.c                                                   *
  *                                                                  *
  * Description: chat server                                         *
- *                                                                  *
- * To compile: cc chatser.c -o name                                 *
  *                                                                  *
  * Copyright (C) 2000 Cesare Placanica                              *
  *                                                                  *
@@ -26,23 +22,36 @@
 #include "chat.h"
 #include <stdlib.h>
 
+/* ipv6 aware with mapped address */
+
 int nClient = 0;
 char buffer[MAXCHR];
 char message[MAXCHR];
 
-int openSocket(struct sockaddr_in *addr) {
+int openSocket(internet_domain_sockaddr *addr) {
     int sd;
 
+#ifdef IPV6_CHAT
+    memset(addr, 0, sizeof(*addr));
+    sd = socket(AF_INET6, SOCK_STREAM, 0);
+#else
     memset((char *)addr, 0, sizeof(*addr));
     sd = socket(AF_INET, SOCK_STREAM, 0);
+#endif
     if (sd < 0) {
         perror("S: openSocket socket error");
         return -1;
     } else {
         printf("S: openSocket socket OK\n");
+#ifdef IPV6_CHAT
+        addr->sin6_family = AF_INET6;
+        addr->sin6_port = htons(5900);
+        addr->sin6_addr = in6addr_any;
+#else
         addr->sin_family = AF_INET;
         addr->sin_addr.s_addr = htonl(INADDR_ANY);
         addr->sin_port = htons(5900);
+#endif
         if (bind(sd, (struct sockaddr *)addr, sizeof(*addr)) < 0) {
             perror("S: openSocket bind error");
             return -1;
@@ -112,8 +121,8 @@ int main() {
     int fd[MAXCON];
     fd_set rfds;
     fd_set afds;
-    struct sockaddr_in serAddr;
-    struct sockaddr_in cliAddr;
+    internet_domain_sockaddr serAddr;
+    internet_domain_sockaddr cliAddr;
 
     if ((sockfd = openSocket(&serAddr)) < 0) {
         exit(0);
@@ -151,7 +160,7 @@ int main() {
         /* NEW CONNECTIONS MANAGEMENT */
         if (FD_ISSET(sockfd, &rfds)) {
             if ((i = freeConnections(fd)) < 0) {
-                printf("S: non ci sono canali liberi\n");
+                printf("S: no free channels\n");
             } else {
                 cliLen = sizeof(cliAddr);
                 memset((char *)&cliAddr, 0, sizeof(cliAddr));
@@ -164,7 +173,7 @@ int main() {
                     fd[i] = newsockfd;
                     nClient += 1;
                     printf("S: client %d connected", i + 1);
-                    printf(" nClient %d\n", nClient);
+                    printf(" n client %d\n", nClient);
                 }
             }
         }
@@ -179,7 +188,7 @@ int main() {
                         fd[i] = -1;
                         nClient -= 1;
                         printf("S: client %d disconnected", i + 1);
-                        printf(" nClient %d\n", nClient);
+                        printf(" n client %d\n", nClient);
                     }
                 }
             }

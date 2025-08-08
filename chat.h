@@ -1,11 +1,9 @@
 /* *
  * Name: chat.h                                                     *
  *                                                                  *
- * Version: 1.2.0                                                   *
- *                                                                  *
  * Description: chat include file                                   *
  *                                                                  *
- * Copyright (C) 2007 Cesare Placanica                              *
+ * Copyright (C) 2000 Cesare Placanica                              *
  *                                                                  *
  * This program is free software; you can redistribute it and/or    *
  * modify it under the terms of the GNU General Public License      *
@@ -42,5 +40,11 @@
 #define MAXCON 5
 #define ACK_S "OK"
 #define MSG_C "exit\n"
+
+#ifdef IPV6_CHAT
+typedef struct sockaddr_in6 internet_domain_sockaddr;
+#else
+typedef struct sockaddr_in internet_domain_sockaddr;
+#endif
 
 #endif

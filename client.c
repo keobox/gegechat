@@ -1,13 +1,9 @@
 /* *
- * Name: chatcli.c                                                  *
- *                                                                  *
- * Version: 1.5.2                                                   *
+ * Name: client.c                                                   *
  *                                                                  *
  * Description: chat client                                         *
  *                                                                  *
- * To compile: cc chatcli.c -o name                                 *
- *                                                                  *
- * Copyright (C) 2007 Cesare Placanica                              *
+ * Copyright (C) 2000 Cesare Placanica                              *
  *                                                                  *
  * This program is free software; you can redistribute it and/or    *
  * modify it under the terms of the GNU General Public License      *
@@ -31,10 +27,13 @@
 void usage(char *cmd) { printf("USAGE:\n%s <hostname>\n", cmd); }
 
 int main(int argc, char *argv[]) {
-    int sd, cont, status, pid, errnum;
+    int sd, cont, status, pid;
+#ifdef IPV6_CHAT
+    int errnum;
+#endif
     char bufferIn[MAXCHR];
     char bufferOut[MAXCHR];
-    struct sockaddr_in6 srv;
+    internet_domain_sockaddr srv;
     struct hostent *hp;
 
     if (argc != 2) {
@@ -44,22 +43,36 @@ int main(int argc, char *argv[]) {
 
     status = 0;
     memset((char *)&srv, 0, sizeof(srv));
+#ifdef IPV6_CHAT
     sd = socket(AF_INET6, SOCK_STREAM, 0);
+#else
+    sd = socket(AF_INET, SOCK_STREAM, 0);
+#endif
     if (sd < 0) {
         perror("C: socket error");
         exit(0);
     }
+#ifdef IPV6_CHAT
     hp = getipnodebyname(argv[1], AF_INET6, AI_DEFAULT, &errnum);
+#else
+    srv.sin_family = AF_INET;
+    hp = gethostbyname(argv[1]);
+#endif
     if (hp == NULL) {
         printf("C: host not available\n");
         exit(1);
     }
+#ifdef IPV6_CHAT
     memset(&srv, 0, sizeof(srv));
     srv.sin6_family = hp->h_addrtype;
     srv.sin6_port = htons(5900);
     memcpy((void *)&srv.sin6_addr, (void *)hp->h_addr, hp->h_length);
     freehostent(hp);
     hp = NULL;
+#else
+    memcpy((char *)&srv.sin_addr, (char *)hp->h_addr, hp->h_length);
+    srv.sin_port = htons(5900);
+#endif
     if (connect(sd, (struct sockaddr *)&srv, sizeof(srv)) < 0) {
         perror("C: connect error");
         exit(2);
@@ -89,7 +102,7 @@ int main(int argc, char *argv[]) {
                 }
             } else {
                 /* parent writing task */
-                printf("C: Msg: ");
+                printf("C: Message: ");
                 memset(bufferOut, 0, MAXCHR);
                 fgets(bufferOut, sizeof(bufferOut), stdin);
                 if (send(sd, bufferOut, strlen(bufferOut), 0) < 0) {
