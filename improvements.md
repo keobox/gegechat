@@ -1,4 +1,4 @@
-# GegeChat Client Improvements
+# GegeChat Improvements
 
 ## Error Handling Enhancement in client.c
 
@@ -164,3 +164,88 @@ close(sd);
 3. **Error Case**: Handles `waitpid()` errors gracefully
 
 This improvement eliminates the race condition while preserving the original fork-based architecture and maintaining backward compatibility with properly functioning servers.
+
+## Send Error Handling Enhancement
+
+### Problem
+The original client had inadequate error handling in the parent process (writing task) when sending messages to the server. The code would only print an error message and continue in the loop when `send()` failed:
+
+- Could lead to repeated send failures without proper recovery
+- No distinction between different types of network errors
+- No graceful handling of connection failures
+- User would not be informed about connection status
+
+### Original Code
+```c
+if (send(sd, bufferOut, strlen(bufferOut), 0) < 0) {
+    perror("C: parent send error");
+}
+if (strcmp(bufferOut, MSG_C) == 0) {
+    cont = 0;
+}
+```
+
+### Improved Code
+```c
+int bytes_sent = send(sd, bufferOut, strlen(bufferOut), 0);
+if (bytes_sent < 0) {
+    if (errno == EINTR) {
+        // Interrupted by signal, try again
+        printf("C: send interrupted, retrying...\n");
+        continue;
+    } else if (errno == EPIPE || errno == ECONNRESET) {
+        // Connection broken
+        printf("C: connection lost, exiting\n");
+        cont = 0;
+    } else {
+        // Other network error
+        perror("C: parent send error");
+        printf("C: network error, exiting\n");
+        cont = 0;
+    }
+} else if (bytes_sent == 0) {
+    // This shouldn't happen with send(), but handle it
+    printf("C: send returned 0, connection may be closed\n");
+    cont = 0;
+} else {
+    // Successful send, check for exit command
+    if (strcmp(bufferOut, MSG_C) == 0) {
+        cont = 0;
+    }
+}
+```
+
+### Solution Features
+
+1. **Return Value Analysis**: Captures and analyzes `send()` return value
+2. **Signal Interruption Handling**: Retries operation when interrupted by signals (`EINTR`)
+3. **Connection Failure Detection**: Identifies broken connections (`EPIPE`, `ECONNRESET`)
+4. **Graceful Error Handling**: Exits cleanly on network failures instead of looping
+5. **User Feedback**: Provides clear messages about error types and actions taken
+6. **Edge Case Handling**: Handles the rare case where `send()` returns 0
+
+### Error Categories Handled
+
+- **`EINTR`**: Signal interruption → Retry with user notification
+- **`EPIPE`**: Broken pipe (server closed connection) → Graceful exit
+- **`ECONNRESET`**: Connection reset by peer → Graceful exit  
+- **Other errors**: Generic network failures → Exit with error details
+- **Zero return**: Potential connection closure → Graceful exit
+
+### Benefits
+
+- **Robust Network Handling**: Properly handles various network failure scenarios
+- **No Infinite Loops**: Prevents repeated failed send attempts
+- **User Awareness**: Clear feedback about connection status and errors
+- **Graceful Degradation**: Clean shutdown triggers timeout-based child cleanup
+- **Signal Safety**: Correctly handles system call interruptions
+- **Resource Management**: Ensures proper cleanup when network fails
+
+### Integration with Existing Features
+
+This improvement works seamlessly with the timeout-based shutdown mechanism:
+- When parent exits due to send error, it triggers the timeout-based child cleanup
+- Maintains the same graceful shutdown flow regardless of exit reason
+- Preserves the fork-based architecture while adding network resilience
+
+The enhanced error handling makes the GegeChat client robust against network instability while providing clear feedback to users about connection status.

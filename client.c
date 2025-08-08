@@ -117,11 +117,32 @@ int main(int argc, char *argv[]) {
                 printf("C: Message: ");
                 memset(bufferOut, 0, MAXCHR);
                 fgets(bufferOut, sizeof(bufferOut), stdin);
-                if (send(sd, bufferOut, strlen(bufferOut), 0) < 0) {
-                    perror("C: parent send error");
-                }
-                if (strcmp(bufferOut, MSG_C) == 0) {
+                
+                int bytes_sent = send(sd, bufferOut, strlen(bufferOut), 0);
+                if (bytes_sent < 0) {
+                    if (errno == EINTR) {
+                        // Interrupted by signal, try again
+                        printf("C: send interrupted, retrying...\n");
+                        continue;
+                    } else if (errno == EPIPE || errno == ECONNRESET) {
+                        // Connection broken
+                        printf("C: connection lost, exiting\n");
+                        cont = 0;
+                    } else {
+                        // Other network error
+                        perror("C: parent send error");
+                        printf("C: network error, exiting\n");
+                        cont = 0;
+                    }
+                } else if (bytes_sent == 0) {
+                    // This shouldn't happen with send(), but handle it
+                    printf("C: send returned 0, connection may be closed\n");
                     cont = 0;
+                } else {
+                    // Successful send, check for exit command
+                    if (strcmp(bufferOut, MSG_C) == 0) {
+                        cont = 0;
+                    }
                 }
             }
         } while (cont);
