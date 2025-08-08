@@ -249,3 +249,93 @@ This improvement works seamlessly with the timeout-based shutdown mechanism:
 - Preserves the fork-based architecture while adding network resilience
 
 The enhanced error handling makes the GegeChat client robust against network instability while providing clear feedback to users about connection status.
+
+## Server Socket Reuse Fix (SO_REUSEADDR)
+
+### Problem
+The original server code had a common issue on Unix-like systems (including macOS) where restarting the server immediately after shutdown would fail with "Address already in use" error. This occurs because:
+
+- When a TCP server closes, the socket enters TIME_WAIT state
+- The OS keeps the port reserved for a period (typically 30-120 seconds)
+- Attempting to bind to the same port during this period fails
+- This made development and testing difficult, requiring manual waits between server restarts
+
+### Original Code
+```c
+int openSocket(internet_domain_sockaddr *addr) {
+    int sd;
+
+#ifdef IPV6_CHAT
+    sd = socket(AF_INET6, SOCK_STREAM, 0);
+#else
+    sd = socket(AF_INET, SOCK_STREAM, 0);
+#endif
+    if (sd < 0) {
+        perror("S: openSocket socket error");
+        return -1;
+    } else {
+        printf("S: openSocket socket OK\n");
+        // Direct bind without SO_REUSEADDR
+        if (bind(sd, (struct sockaddr *)addr, sizeof(*addr)) < 0) {
+            perror("S: openSocket bind error");
+            return -1;
+        }
+    }
+}
+```
+
+### Improved Code
+```c
+int openSocket(internet_domain_sockaddr *addr) {
+    int sd;
+    int optval = 1;
+
+#ifdef IPV6_CHAT
+    sd = socket(AF_INET6, SOCK_STREAM, 0);
+#else
+    sd = socket(AF_INET, SOCK_STREAM, 0);
+#endif
+    if (sd < 0) {
+        perror("S: openSocket socket error");
+        return -1;
+    } else {
+        printf("S: openSocket socket OK\n");
+
+        // Set SO_REUSEADDR to avoid "Address already in use" error
+        if (setsockopt(sd, SOL_SOCKET, SO_REUSEADDR, &optval, sizeof(optval)) < 0) {
+            perror("S: openSocket setsockopt SO_REUSEADDR error");
+            close(sd);
+            return -1;
+        }
+
+        if (bind(sd, (struct sockaddr *)addr, sizeof(*addr)) < 0) {
+            perror("S: openSocket bind error");
+            return -1;
+        }
+    }
+}
+```
+
+### Solution Features
+
+1. **SO_REUSEADDR Option**: Enables immediate port reuse after server shutdown
+2. **Proper Error Handling**: Closes socket and returns error if setsockopt fails
+3. **Cross-Platform Compatibility**: Works on all Unix-like systems (Linux, macOS, BSD)
+4. **Development Friendly**: Eliminates waiting periods between server restarts
+
+### Benefits
+
+- **Immediate Restart**: Server can be restarted immediately without "Address already in use" errors
+- **Development Efficiency**: No need to wait for TIME_WAIT period to expire
+- **Production Ready**: Standard practice for TCP servers
+- **Robust Error Handling**: Proper cleanup if socket option setting fails
+- **Platform Compatibility**: Consistent behavior across Unix-like systems
+
+### Technical Details
+
+- **SO_REUSEADDR**: Socket option that allows reuse of local addresses
+- **optval = 1**: Enables the socket option (non-zero value)
+- **Socket Level**: Applied at SOL_SOCKET level, affecting the socket itself
+- **Timing**: Must be set after socket creation but before bind()
+
+This improvement follows standard network programming practices and eliminates a common development frustration when working with TCP servers.

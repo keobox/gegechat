@@ -30,6 +30,7 @@ char message[MAXCHR];
 
 int openSocket(internet_domain_sockaddr *addr) {
     int sd;
+    int optval = -1;
 
 #ifdef IPV6_CHAT
     memset(addr, 0, sizeof(*addr));
@@ -52,6 +53,12 @@ int openSocket(internet_domain_sockaddr *addr) {
         addr->sin_addr.s_addr = htonl(INADDR_ANY);
         addr->sin_port = htons(5900);
 #endif
+        // Set SO_REUSEADDR to avoid "Address already in use" error
+        if (setsockopt(sd, SOL_SOCKET, SO_REUSEADDR, &optval, sizeof(optval)) < 0) {
+            perror("S: openSocket setsockopt SO_REUSEADDR error");
+            close(sd);
+            return -1;
+        }
         if (bind(sd, (struct sockaddr *)addr, sizeof(*addr)) < 0) {
             perror("S: openSocket bind error");
             return -1;
