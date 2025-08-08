@@ -1,3 +1,4 @@
 *.o
 client_ipv*
 server_ipv*
+.vscode

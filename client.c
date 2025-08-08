@@ -90,8 +90,20 @@ int main(int argc, char *argv[]) {
             if (pid == 0) {
                 /* child reading task */
                 memset(bufferIn, 0, MAXCHR);
-                if (recv(sd, bufferIn, MAXCHR, 0) < 0) {
-                    perror("C: child recv error");
+                int bytes_received = recv(sd, bufferIn, MAXCHR, 0);
+                if (bytes_received < 0) {
+                    if (errno == EINTR) {
+                        // Interrupted by signal, continue
+                        continue;
+                    } else {
+                        // Real network error, exit
+                        perror("C: child recv error");
+                        exit(5);
+                    }
+                } else if (bytes_received == 0) {
+                    // Connection closed by server
+                    printf("C: server closed connection\n");
+                    exit(0);
                 } else {
                     if (strcmp(bufferIn, ACK_S) == 0) {
                         printf("C: child terminated\n");
