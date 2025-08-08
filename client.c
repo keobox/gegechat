@@ -21,13 +21,14 @@
 #include "chat.h"
 #include <stdlib.h>
 #include <sys/wait.h>
+#include <signal.h>
 
 /* ipv6 aware with mapped address */
 
 void usage(char *cmd) { printf("USAGE:\n%s <hostname>\n", cmd); }
 
 int main(int argc, char *argv[]) {
-    int sd, cont, status, pid;
+    int sd, cont, pid;
 #ifdef IPV6_CHAT
     int errnum;
 #endif
@@ -41,7 +42,6 @@ int main(int argc, char *argv[]) {
         exit(0);
     }
 
-    status = 0;
     memset((char *)&srv, 0, sizeof(srv));
 #ifdef IPV6_CHAT
     sd = socket(AF_INET6, SOCK_STREAM, 0);
@@ -125,13 +125,42 @@ int main(int argc, char *argv[]) {
                 }
             }
         } while (cont);
-        if (wait(&status) < 0) {
-            printf("C: parent wait status 0x%X\n", status);
-            perror("C: parent wait error");
-        } else {
-            printf("C: disconnect from server\n");
-            close(sd);
+
+        // Timeout-based wait for child process
+        int child_status;
+        int wait_time = 0;
+        const int MAX_WAIT_SECONDS = 5;  // 5 second timeout
+
+        printf("C: waiting for server acknowledgment...\n");
+        while (wait_time < MAX_WAIT_SECONDS) {
+            pid_t result = waitpid(pid, &child_status, WNOHANG);
+            if (result == pid) {
+                // Child has terminated normally
+                printf("C: disconnect from server\n");
+                close(sd);
+                return 0;
+            } else if (result == -1) {
+                perror("C: waitpid error");
+                break;
+            }
+            // Child still running, wait a bit more
+            sleep(1);
+            wait_time++;
         }
+
+        if (wait_time >= MAX_WAIT_SECONDS) {
+            printf("C: timeout waiting for server response, terminating child\n");
+            kill(pid, SIGTERM);  // Send termination signal to child
+            sleep(1);            // Give child time to exit gracefully
+            if (waitpid(pid, &child_status, WNOHANG) == 0) {
+                // Child still running, force kill
+                printf("C: forcing child termination\n");
+                kill(pid, SIGKILL);
+                waitpid(pid, &child_status, 0);
+            }
+        }
+
+        close(sd);
     } /* else */
     return 0;
 } /* main */
