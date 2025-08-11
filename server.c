@@ -30,7 +30,7 @@ char message[MAXCHR];
 
 int openSocket(internet_domain_sockaddr *addr) {
     int sd;
-    int optval = -1;
+    int optval = 1;
 
 #ifdef IPV6_CHAT
     memset(addr, 0, sizeof(*addr));
@@ -87,36 +87,98 @@ void dispatch(int *fd, int i) {
     int k;
 
     memset(message, 0, MAXCHR);
-    sprintf(message, "C%d: %s", i + 1, buffer);
+    snprintf(message, MAXCHR, "C%d: %s", i + 1, buffer);
     for (k = 0; k < MAXCON; k++) {
         if ((k != i) && (fd[k] > -1)) {
-            if (send(fd[k], message, strlen(message), 0) < 0) {
+            int bytes_sent = send(fd[k], message, strlen(message), 0);
+            if (bytes_sent < 0) {
+                if (errno == EINTR) {
+                    // Interrupted by signal - retry once for dispatch
+                    printf("S: dispatch send interrupted, retrying to client %d...\n", k + 1);
+                    bytes_sent = send(fd[k], message, strlen(message), 0);
+                    if (bytes_sent < 0) {
+                        printf("S: dispatch retry failed for client %d, removing connection\n", k + 1);
+                        close(fd[k]);
+                        fd[k] = -1;
+                        nClient--;
+                    }
+                } else if (errno == EPIPE || errno == ECONNRESET) {
+                    // Connection broken - client disconnected
+                    printf("S: client %d disconnected during message dispatch, removing connection\n", k + 1);
+                    close(fd[k]);
+                    fd[k] = -1;
+                    nClient--;
+                } else {
+                    // Other network error - assume connection is bad
+                    perror("S: dispatch send error");
+                    printf("S: removing client %d connection due to send error\n", k + 1);
+                    close(fd[k]);
+                    fd[k] = -1;
+                    nClient--;
+                }
             }
-            perror("S: dispatch send error");
+            // bytes_sent >= 0 means success, continue to next client
         }
     }
 }
 
 int communication(int *fd, int i) {
     int out = 0;
+    int bytes_received;
 
     memset(buffer, 0, MAXCHR);
-    if (recv(fd[i], buffer, MAXCHR, 0) < 0) {
-        perror("S: communication recv error");
-    } else {
-        printf("S: %s", buffer);
-        if (nClient > 1) {
-            dispatch(fd, i);
-        }
-        if (strcmp(buffer, MSG_C) == 0) {
-            if (send(fd[i], ACK_S, sizeof(ACK_S), 0) < 0) {
-                perror("S: communication send error");
+    
+    // Enhanced recv() with EINTR handling
+    do {
+        bytes_received = recv(fd[i], buffer, MAXCHR, 0);
+        if (bytes_received < 0) {
+            if (errno == EINTR) {
+                // Interrupted by signal, retry
+                printf("S: recv interrupted by signal, retrying...\n");
+                continue;
             } else {
-                printf("S: send ACK to client %d\n", i + 1);
-                out = -1;
+                // Real network error
+                perror("S: communication recv error");
+                out = -1; // Signal connection should be closed
+                break;
             }
+        } else if (bytes_received == 0) {
+            printf("S: client %d disconnected (recv returned 0)\n", i + 1);
+            out = -1; // Signal connection should be closed
+            break;
+        } else {
+            // Successful recv, process the message
+            printf("S: %s", buffer);
+            if (nClient > 1) {
+                dispatch(fd, i);
+            }
+            if (strcmp(buffer, MSG_C) == 0) {
+                // Enhanced send() with sophisticated error handling
+                int bytes_sent = send(fd[i], ACK_S, sizeof(ACK_S), 0);
+                if (bytes_sent < 0) {
+                    if (errno == EINTR) {
+                        // Interrupted by signal - in this case, we'll treat as error
+                        // since ACK delivery is critical for proper shutdown
+                        printf("S: ACK send interrupted, client %d may not receive confirmation\n", i + 1);
+                        out = -1;
+                    } else if (errno == EPIPE || errno == ECONNRESET) {
+                        // Connection broken - client disconnected
+                        printf("S: client %d disconnected during ACK send\n", i + 1);
+                        out = -1;
+                    } else {
+                        // Other network error
+                        perror("S: communication send ACK error");
+                        out = -1;
+                    }
+                } else {
+                    printf("S: send ACK to client %d\n", i + 1);
+                    out = -1; // Normal exit after ACK
+                }
+            }
+            break; // Exit the retry loop
         }
-    }
+    } while (bytes_received < 0 && errno == EINTR);
+    
     return out;
 }
 

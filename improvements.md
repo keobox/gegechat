@@ -339,3 +339,351 @@ int openSocket(internet_domain_sockaddr *addr) {
 - **Timing**: Must be set after socket creation but before bind()
 
 This improvement follows standard network programming practices and eliminates a common development frustration when working with TCP servers.
+
+## Critical Bug Fix: Dispatch Function Error Handling
+
+### Problem
+The most critical issue in the original server code was in the `dispatch()` function at line 95. The error handling logic was fundamentally broken, causing `perror("S: dispatch send error")` to execute **every time** a message was successfully sent to clients, not just when errors occurred.
+
+### Original Problematic Code
+```c
+void dispatch(int *fd, int i) {
+    int k;
+
+    memset(message, 0, MAXCHR);
+    sprintf(message, "C%d: %s", i + 1, buffer);
+    for (k = 0; k < MAXCON; k++) {
+        if ((k != i) && (fd[k] > -1)) {
+            if (send(fd[k], message, strlen(message), 0) < 0) {
+            }
+            perror("S: dispatch send error");  // ← ALWAYS EXECUTES!
+        }
+    }
+}
+```
+
+### Root Cause
+The `if` statement checking for `send()` failure had an **empty body**, meaning the `perror()` call was outside the conditional block. This caused:
+- False error reports on every successful message dispatch
+- Confusion about actual network problems
+- Log pollution with spurious error messages
+- Difficulty diagnosing real network issues
+
+### Fixed Code
+```c
+void dispatch(int *fd, int i) {
+    int k;
+
+    memset(message, 0, MAXCHR);
+    snprintf(message, MAXCHR, "C%d: %s", i + 1, buffer);
+    for (k = 0; k < MAXCON; k++) {
+        if ((k != i) && (fd[k] > -1)) {
+            if (send(fd[k], message, strlen(message), 0) < 0) {
+                perror("S: dispatch send error");
+                // Could also consider closing the connection here if send fails
+                // close(fd[k]); fd[k] = -1; nClient--;
+            }
+        }
+    }
+}
+```
+
+### Additional Improvements Made
+1. **Buffer Safety**: Replaced `sprintf()` with `snprintf()` to prevent buffer overflows
+2. **Proper Error Scope**: `perror()` now only executes when `send()` actually fails
+3. **Future Enhancement**: Added comment suggesting connection cleanup on send failure
+
+### Benefits
+- **Accurate Error Reporting**: Errors only reported when they actually occur
+- **Clean Logs**: No more spurious error messages flooding the output
+- **Better Debugging**: Real network issues can now be identified
+- **Memory Safety**: Buffer overflow protection with `snprintf()`
+
+## Enhanced recv() Error Handling in Server
+
+### Problem
+The original server's `communication()` function had inadequate handling of `recv()` return values:
+- Did not distinguish between network errors (-1) and client disconnections (0)
+- Treated client disconnections as successful operations
+- Could not properly detect when clients closed connections gracefully
+
+### Original Code
+```c
+int communication(int *fd, int i) {
+    int out = 0;
+
+    memset(buffer, 0, MAXCHR);
+    if (recv(fd[i], buffer, MAXCHR, 0) < 0) {
+        perror("S: communication recv error");
+    } else {
+        // Process message regardless of recv() return value
+        printf("S: %s", buffer);
+        if (nClient > 1) {
+            dispatch(fd, i);
+        }
+        // ... rest of processing
+    }
+    return out;
+}
+```
+
+### Improved Code
+```c
+int communication(int *fd, int i) {
+    int out = 0;
+    int bytes_received;
+
+    memset(buffer, 0, MAXCHR);
+    bytes_received = recv(fd[i], buffer, MAXCHR, 0);
+    
+    if (bytes_received < 0) {
+        perror("S: communication recv error");
+        out = -1; // Signal connection should be closed
+    } else if (bytes_received == 0) {
+        printf("S: client %d disconnected (recv returned 0)\n", i + 1);
+        out = -1; // Signal connection should be closed
+    } else {
+        printf("S: %s", buffer);
+        if (nClient > 1) {
+            dispatch(fd, i);
+        }
+        if (strcmp(buffer, MSG_C) == 0) {
+            if (send(fd[i], ACK_S, sizeof(ACK_S), 0) < 0) {
+                perror("S: communication send error");
+            } else {
+                printf("S: send ACK to client %d\n", i + 1);
+                out = -1;
+            }
+        }
+    }
+    return out;
+}
+```
+
+### Solution Features
+
+1. **Return Value Capture**: Store `recv()` result in `bytes_received` variable
+2. **Three-Way Handling**: Distinguish between error (<0), disconnection (0), and data (>0)
+3. **Proper Signaling**: Return -1 to main loop for connection cleanup in error cases
+4. **Clear Logging**: Informative messages for different disconnection scenarios
+
+### Error Handling Categories
+
+- **`bytes_received < 0`**: Network error → Log error, signal cleanup
+- **`bytes_received == 0`**: Client disconnected gracefully → Log disconnect, signal cleanup  
+- **`bytes_received > 0`**: Data received → Process normally
+
+### Benefits
+
+- **Accurate Client Tracking**: Proper detection of client disconnections
+- **Resource Management**: Connections cleaned up when clients disconnect
+- **Network Reliability**: Distinguishes between errors and normal disconnections
+- **Better Monitoring**: Clear logs showing client connection states
+- **Protocol Compliance**: Follows TCP socket programming best practices
+
+## SO_REUSEADDR Value Correction
+
+### Problem
+The original server code had the correct structure for setting `SO_REUSEADDR` but used an incorrect value (`-1` instead of `1`), which would not properly enable the socket option.
+
+### Original Code
+```c
+int openSocket(internet_domain_sockaddr *addr) {
+    int sd;
+    int optval = -1;  // ← Incorrect value
+    
+    // ... socket creation ...
+    
+    if (setsockopt(sd, SOL_SOCKET, SO_REUSEADDR, &optval, sizeof(optval)) < 0) {
+        perror("S: openSocket setsockopt SO_REUSEADDR error");
+        close(sd);
+        return -1;
+    }
+}
+```
+
+### Fixed Code
+```c
+int openSocket(internet_domain_sockaddr *addr) {
+    int sd;
+    int optval = 1;  // ← Correct value to enable option
+    
+    // ... socket creation ...
+    
+    if (setsockopt(sd, SOL_SOCKET, SO_REUSEADDR, &optval, sizeof(optval)) < 0) {
+        perror("S: openSocket setsockopt SO_REUSEADDR error");
+        close(sd);
+        return -1;
+    }
+}
+```
+
+### Technical Details
+- **Socket Options**: Non-zero values enable socket options, zero disables them
+- **Previous Behavior**: `-1` might have worked on some systems but is not portable
+- **Standard Practice**: Use `1` to explicitly enable `SO_REUSEADDR`
+- **Reliability**: Ensures consistent behavior across different Unix systems
+
+## Summary of Server Enhancements
+
+These server-side improvements address critical reliability and usability issues:
+
+1. **🔴 Critical**: Fixed dispatch function bug causing false error reports
+2. **🟡 Important**: Enhanced recv() handling for proper client disconnection detection  
+3. **🟡 Important**: Corrected SO_REUSEADDR value for reliable socket reuse
+4. **🟢 Safety**: Added buffer overflow protection with snprintf()
+
+The server is now much more robust, provides accurate error reporting, and handles client connections properly according to TCP socket programming best practices. These changes maintain the original architecture while adding modern safety and reliability features.
+
+## Advanced Error Handling: Signal-Safe Network Operations
+
+### Problem
+After implementing the basic error handling fixes, a comparison with the client.c code revealed that the server lacked the sophisticated error handling patterns already implemented on the client side:
+
+- No handling of `EINTR` (signal interruption) errors
+- No distinction between different types of network failures
+- No automatic retry logic for recoverable errors
+- No automatic connection cleanup for failed connections
+
+### Client-Inspired Improvements
+
+The client.c already had excellent error handling patterns that were worth adapting for the server:
+
+1. **EINTR Handling**: Retry operations interrupted by signals
+2. **Connection State Detection**: Identify `EPIPE` and `ECONNRESET` errors
+3. **Automatic Recovery**: Different strategies for different error types
+4. **Connection Cleanup**: Remove dead connections automatically
+
+### Enhanced recv() in communication()
+
+#### Before
+```c
+bytes_received = recv(fd[i], buffer, MAXCHR, 0);
+if (bytes_received < 0) {
+    perror("S: communication recv error");
+    out = -1;
+} else if (bytes_received == 0) {
+    printf("S: client %d disconnected (recv returned 0)\n", i + 1);
+    out = -1;
+}
+```
+
+#### After  
+```c
+// Enhanced recv() with EINTR handling
+do {
+    bytes_received = recv(fd[i], buffer, MAXCHR, 0);
+    if (bytes_received < 0) {
+        if (errno == EINTR) {
+            // Interrupted by signal, retry
+            printf("S: recv interrupted by signal, retrying...\n");
+            continue;
+        } else {
+            // Real network error
+            perror("S: communication recv error");
+            out = -1;
+            break;
+        }
+    } else if (bytes_received == 0) {
+        printf("S: client %d disconnected (recv returned 0)\n", i + 1);
+        out = -1;
+        break;
+    } else {
+        // Process successful recv...
+        break;
+    }
+} while (bytes_received < 0 && errno == EINTR);
+```
+
+### Enhanced send() with Connection State Detection
+
+#### ACK Send Error Handling
+```c
+int bytes_sent = send(fd[i], ACK_S, sizeof(ACK_S), 0);
+if (bytes_sent < 0) {
+    if (errno == EINTR) {
+        printf("S: ACK send interrupted, client %d may not receive confirmation\n", i + 1);
+        out = -1;
+    } else if (errno == EPIPE || errno == ECONNRESET) {
+        printf("S: client %d disconnected during ACK send\n", i + 1);
+        out = -1;
+    } else {
+        perror("S: communication send ACK error");
+        out = -1;
+    }
+}
+```
+
+### Automatic Connection Cleanup in dispatch()
+
+#### Before
+```c
+if (send(fd[k], message, strlen(message), 0) < 0) {
+    perror("S: dispatch send error");
+    // Could also consider closing the connection here if send fails
+}
+```
+
+#### After
+```c
+int bytes_sent = send(fd[k], message, strlen(message), 0);
+if (bytes_sent < 0) {
+    if (errno == EINTR) {
+        // Retry once for signal interruption
+        printf("S: dispatch send interrupted, retrying to client %d...\n", k + 1);
+        bytes_sent = send(fd[k], message, strlen(message), 0);
+        if (bytes_sent < 0) {
+            printf("S: dispatch retry failed for client %d, removing connection\n", k + 1);
+            close(fd[k]);
+            fd[k] = -1;
+            nClient--;
+        }
+    } else if (errno == EPIPE || errno == ECONNRESET) {
+        printf("S: client %d disconnected during message dispatch, removing connection\n", k + 1);
+        close(fd[k]);
+        fd[k] = -1;
+        nClient--;
+    } else {
+        perror("S: dispatch send error");
+        printf("S: removing client %d connection due to send error\n", k + 1);
+        close(fd[k]);
+        fd[k] = -1;
+        nClient--;
+    }
+}
+```
+
+### Error Handling Categories
+
+#### Signal Interruption (EINTR)
+- **recv()**: Automatic retry with user notification
+- **send() in ACK**: Treat as error (ACK delivery is critical)
+- **send() in dispatch**: Single retry attempt, then cleanup on failure
+
+#### Connection Broken (EPIPE/ECONNRESET)  
+- **All operations**: Immediate connection cleanup with clear logging
+- **Resource management**: Proper socket closure and client count decrement
+- **User feedback**: Informative messages about disconnection cause
+
+#### Other Network Errors
+- **All operations**: Assume connection is compromised, perform cleanup
+- **Logging**: Standard perror() plus context-specific messages
+- **Recovery**: Clean removal from active connection pool
+
+### Benefits of Enhanced Error Handling
+
+1. **Signal Resilience**: Server operations continue correctly even when interrupted by system signals
+2. **Automatic Cleanup**: Dead connections are automatically detected and removed
+3. **Resource Management**: No connection leaks or zombie file descriptors
+4. **Improved Reliability**: Server maintains accurate client state even during network issues
+5. **Better Monitoring**: Clear, categorized error messages for different failure types
+6. **Client Compatibility**: Error handling patterns match client expectations
+
+### Integration with Existing Architecture
+
+- **select() Loop**: Enhanced error handling works seamlessly with the existing select-based architecture
+- **Client Tracking**: Automatic cleanup maintains accurate `nClient` count
+- **File Descriptor Management**: Proper cleanup prevents FD leaks
+- **Backward Compatibility**: Changes are purely additive, don't break existing protocol
+
+This enhancement brings the server's error handling up to the same sophisticated level as the client, creating a more robust and reliable chat system that handles real-world network conditions gracefully.
