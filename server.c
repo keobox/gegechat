@@ -152,7 +152,7 @@ int communication(int *fd, int i) {
             if (nClient > 1) {
                 dispatch(fd, i);
             }
-            if (strcmp(buffer, MSG_C) == 0) {
+            if (strncmp(buffer, MSG_C, strlen(MSG_C)) == 0) {
                 // Enhanced send() with sophisticated error handling
                 int bytes_sent = send(fd[i], ACK_S, sizeof(ACK_S), 0);
                 if (bytes_sent < 0) {
