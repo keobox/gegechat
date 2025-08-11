@@ -140,7 +140,7 @@ int main(int argc, char *argv[]) {
                     cont = 0;
                 } else {
                     // Successful send, check for exit command
-                    if (strcmp(bufferOut, MSG_C) == 0) {
+                    if (strncmp(bufferOut, MSG_C, strlen(MSG_C)) == 0) {
                         cont = 0;
                     }
                 }

@@ -731,3 +731,40 @@ While the original code was relatively safe due to buffer pre-initialization wit
 - Future code modifications that might affect buffer handling
 
 This change demonstrates proactive security awareness and defensive programming practices.
+
+## Client-Side String Comparison Security Enhancement
+
+### Problem
+Similar to the server, the client code used `strcmp()` to check for the exit command when processing user input. While `fgets()` provides null-termination, using length-bounded string comparisons is a security best practice.
+
+### Original Code
+```c
+// Successful send, check for exit command
+if (strcmp(bufferOut, MSG_C) == 0) {
+    cont = 0;
+}
+```
+
+### Enhanced Code
+```c
+// Successful send, check for exit command
+if (strncmp(bufferOut, MSG_C, strlen(MSG_C)) == 0) {
+    cont = 0;
+}
+```
+
+### Why This Enhancement is Important
+
+1. **User Input Context**: `bufferOut` contains user input from `fgets()`, making length-bounded operations especially important
+2. **Consistency**: Matches the security enhancement made on the server side
+3. **Defense in Depth**: Additional protection layer for input validation
+4. **Best Practice**: Follows secure coding standards across the entire codebase
+
+### Security Benefits
+
+- **Input Validation**: Explicit length control when processing user commands
+- **Buffer Safety**: Prevents potential issues if input handling changes in the future
+- **Code Consistency**: Both client and server now use the same secure string comparison approach
+- **Defensive Programming**: Proactive security even when immediate risk is low
+
+This enhancement ensures that both client and server components follow consistent security practices for command detection and processing.
